@@ -1,0 +1,30 @@
+name: build-roadlimits
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install osmium
+        run: sudo apt-get update && sudo apt-get install -y osmium-tool
+      - name: Download region extract (Geofabrik)
+        run: curl -fL -o region.osm.pbf https://download.geofabrik.de/russia/central-fed-district-latest.osm.pbf
+      - name: Keep only roads with a maxspeed tag
+        run: |
+          osmium tags-filter region.osm.pbf w/highway maxspeed maxspeed:forward maxspeed:backward -o roads.osm.pbf --overwrite
+          osmium export roads.osm.pbf -f geojsonseq -o roads.geojsonseq --overwrite
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build SQLite
+        run: python3 tools/build_roadlimits.py roads.geojsonseq central-fed-district.sqlite --region central-fed-district
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view roadlimits-v1 >/dev/null 2>&1 || gh release create roadlimits-v1 --title "Road limits v1" --notes "ODbL data © OpenStreetMap contributors. https://www.openstreetmap.org/copyright"
+          gh release upload roadlimits-v1 central-fed-district.sqlite --clobber
