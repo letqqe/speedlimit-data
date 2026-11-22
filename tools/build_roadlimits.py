@@ -69,7 +69,8 @@ def tiles_for_bbox(s, w, n, e):
 
 
 def iter_segments(path):
-    with open(path, encoding="utf-8") as f:
+    f = sys.stdin if path == "-" else open(path, encoding="utf-8")
+    try:
         for line in f:
             line = line.strip().lstrip("\x1e")
             if not line:
@@ -88,6 +89,9 @@ def iter_segments(path):
             # Store each consecutive pair of points as one segment.
             for (lng1, lat1), (lng2, lat2) in zip(coords, coords[1:]):
                 yield kmh, lat1, lng1, lat2, lng2
+    finally:
+        if f is not sys.stdin:
+            f.close()
 
 
 def main():

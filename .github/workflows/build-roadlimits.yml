@@ -41,28 +41,30 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Scratch space on the big disk
+        run: |
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
+          df -h / /mnt
       - name: Install osmium
         run: sudo apt-get update && sudo apt-get install -y osmium-tool
       - name: Download extract
-        run: curl -fL -o region.osm.pbf "${{ matrix.url }}"
-      - name: Keep roads with a maxspeed tag
+        run: curl -fL --retry 5 --retry-delay 10 --retry-all-errors -o /mnt/work/region.osm.pbf "${{ matrix.url }}"
+      - name: Keep roads with a maxspeed tag, stream them into the builder
         run: |
-          osmium tags-filter region.osm.pbf w/highway maxspeed maxspeed:forward maxspeed:backward -o roads.osm.pbf --overwrite
-          rm -f region.osm.pbf
-          osmium export roads.osm.pbf -f geojsonseq -o roads.geojsonseq --overwrite
-          rm -f roads.osm.pbf
-      - name: Build SQLite
-        run: python3 tools/build_roadlimits.py roads.geojsonseq "${{ matrix.id }}.sqlite" --region "${{ matrix.id }}"
+          osmium tags-filter /mnt/work/region.osm.pbf w/highway maxspeed maxspeed:forward maxspeed:backward -o /mnt/work/roads.osm.pbf --overwrite
+          rm -f /mnt/work/region.osm.pbf
+          osmium export /mnt/work/roads.osm.pbf -f geojsonseq -o - | python3 tools/build_roadlimits.py - "/mnt/work/${{ matrix.id }}.sqlite" --region "${{ matrix.id }}"
+          rm -f /mnt/work/roads.osm.pbf
       - name: Write manifest entry
-        run: python3 tools/make_entry.py "${{ matrix.id }}.sqlite" --url "https://github.com/${{ github.repository }}/releases/download/roadlimits-v1/${{ matrix.id }}.sqlite" --out "entry-${{ matrix.id }}.json"
+        run: python3 tools/make_entry.py "/mnt/work/${{ matrix.id }}.sqlite" --url "https://github.com/${{ github.repository }}/releases/download/roadlimits-v1/${{ matrix.id }}.sqlite" --out "/mnt/work/entry-${{ matrix.id }}.json"
       - name: Check size (GitHub limit is 2 GB per file)
-        run: test "$(stat -c %s "${{ matrix.id }}.sqlite")" -lt 2000000000
+        run: test "$(stat -c %s "/mnt/work/${{ matrix.id }}.sqlite")" -lt 2000000000
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           for i in 1 2 3; do
-            gh release upload roadlimits-v1 "${{ matrix.id }}.sqlite" "entry-${{ matrix.id }}.json" --clobber && break
+            gh release upload roadlimits-v1 "/mnt/work/${{ matrix.id }}.sqlite" "/mnt/work/entry-${{ matrix.id }}.json" --clobber && break
             echo "upload attempt $i failed, retrying"; sleep 20
           done
   manifest:
