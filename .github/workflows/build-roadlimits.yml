@@ -86,7 +86,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          FILES=$(ls /mnt/work/${{ matrix.id }}.sqlite /mnt/work/${{ matrix.id }}-r*c*.sqlite /mnt/work/entry-${{ matrix.id }}*.json 2>/dev/null)
+          FILES=""
+          for f in /mnt/work/${{ matrix.id }}.sqlite /mnt/work/${{ matrix.id }}-r*c*.sqlite \
+                   /mnt/work/entry-${{ matrix.id }}.json /mnt/work/entry-${{ matrix.id }}-r*c*.json; do
+            [ -f "$f" ] && FILES="$FILES $f"
+          done
+          echo "uploading:$FILES"
           for i in 1 2 3; do
             gh release upload roadlimits-v1 $FILES --clobber && break
             echo "upload attempt $i failed, retrying"; sleep 20
