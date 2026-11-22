@@ -22,6 +22,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Create release once (avoids a race between parallel jobs)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release view roadlimits-v1 >/dev/null 2>&1 || gh release create roadlimits-v1 --title "Road limits v1" --notes "ODbL data © OpenStreetMap contributors. https://www.openstreetmap.org/copyright"
       - id: plan
         run: echo "matrix=$(python3 tools/list_regions.py --offset ${{ inputs.offset }} --count ${{ inputs.count }})" >> "$GITHUB_OUTPUT"
   build:
@@ -57,8 +61,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view roadlimits-v1 >/dev/null 2>&1 || gh release create roadlimits-v1 --title "Road limits v1" --notes "ODbL data © OpenStreetMap contributors. https://www.openstreetmap.org/copyright"
-          gh release upload roadlimits-v1 "${{ matrix.id }}.sqlite" "entry-${{ matrix.id }}.json" --clobber
+          for i in 1 2 3; do
+            gh release upload roadlimits-v1 "${{ matrix.id }}.sqlite" "entry-${{ matrix.id }}.json" --clobber && break
+            echo "upload attempt $i failed, retrying"; sleep 20
+          done
   manifest:
     needs: build
     if: always()
