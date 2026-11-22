@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""Build a road-limit SQLite database from OpenStreetMap data.
+"""Build road-limit SQLite databases from OpenStreetMap road data.
 
-Input: GeoJSON sequence of road LineStrings with `maxspeed` tags, made by
-  osmium tags-filter region.osm.pbf w/highway maxspeed
-  osmium export -f geojsonseq -o roads.geojsonseq ...
-Output: SQLite file in the format described in
-  app/.../data/roadlimits/RoadLimitFormat.kt (format version 1).
-
-Data: © OpenStreetMap contributors, ODbL 1.0.
+Input: GeoJSON sequence of road LineStrings that carry a maxspeed tag (see the workflow).
+Output: SQLite files in the format of RoadLimitFormat.kt (version 1).
+Data: OpenStreetMap contributors, ODbL 1.0.
 """
 import argparse
 import json
@@ -62,7 +58,7 @@ def tile_key(x, y):
 
 
 def tiles_for_bbox(s, w, n, e):
-    """All tile keys touched by a bounding box."""
+    """Keys of all tiles a bounding box touches."""
     x0, x1 = tile_x(w), tile_x(e)
     y0, y1 = tile_y(n), tile_y(s)  # y grows southward
     return [tile_key(x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)]
@@ -94,7 +90,7 @@ def iter_segments(path):
             f.close()
 
 
-EDGE_DEG = 0.001  # ~100 m: roads this close to a cell edge also go into the neighbouring cell
+EDGE_DEG = 0.001  # about 100 m; roads this close to a cell edge also go into the neighbour
 
 
 def write_db(path, region, tiles, count, bounds, source):
