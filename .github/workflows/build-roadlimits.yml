@@ -27,14 +27,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release view roadlimits-v1 >/dev/null 2>&1 || gh release create roadlimits-v1 --title "Road limits v1" --notes "ODbL data © OpenStreetMap contributors. https://www.openstreetmap.org/copyright"
       - id: plan
-        run: echo "matrix=$(python3 tools/list_regions.py --offset ${{ inputs.offset }} --count ${{ inputs.count }})" >> "$GITHUB_OUTPUT"
+        run: |
+          # Keep the exit code: an empty matrix must fail here, not later in the build job.
+          MATRIX=$(python3 tools/list_regions.py --offset "${{ inputs.offset }}" --count "${{ inputs.count }}") || exit 1
+          [ -n "$MATRIX" ] || { echo "region list is empty"; exit 1; }
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
   build:
     needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 300
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: 3
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
@@ -48,7 +52,7 @@ jobs:
       - name: Install osmium
         run: sudo apt-get update && sudo apt-get install -y osmium-tool
       - name: Download extract
-        run: curl -fL --retry 5 --retry-delay 10 --retry-all-errors -o /mnt/work/region.osm.pbf "${{ matrix.url }}"
+        run: curl -fL --retry 10 --retry-delay 30 --retry-max-time 1200 --retry-all-errors -o /mnt/work/region.osm.pbf "${{ matrix.url }}"
       - name: Plan the grid (cells of about 2 GB of input each)
         run: |
           SIZE=$(stat -c %s /mnt/work/region.osm.pbf)
