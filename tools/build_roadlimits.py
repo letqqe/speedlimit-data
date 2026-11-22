@@ -100,6 +100,8 @@ def main():
 
     tiles = defaultdict(bytearray)
     count = 0
+    south = west = 90.0
+    north = east = -90.0
     for kmh, a_lat, a_lng, b_lat, b_lng in iter_segments(args.geojsonseq):
         rec = RECORD.pack(
             kmh,
@@ -108,6 +110,8 @@ def main():
         )
         s, n = min(a_lat, b_lat), max(a_lat, b_lat)
         w, e = min(a_lng, b_lng), max(a_lng, b_lng)
+        south, north = min(south, s), max(north, n)
+        west, east = min(west, w), max(east, e)
         for key in tiles_for_bbox(s, w, n, e):
             tiles[key] += rec
         count += 1
@@ -123,12 +127,14 @@ def main():
         ("source", args.source),
         ("licence", "ODbL 1.0 (https://opendatacommons.org/licenses/odbl/1-0/)"),
         ("segments", str(count)),
+        ("bounds", f"{south},{west},{north},{east}"),
     ])
     out.executemany("INSERT INTO tiles VALUES (?, ?)", [(k, bytes(v)) for k, v in tiles.items()])
     out.commit()
     out.execute("VACUUM")
     out.close()
     print(f"{count} segments in {len(tiles)} tiles -> {args.out}", file=sys.stderr)
+    print(f"bounds south,west,north,east = {south},{west},{north},{east}", file=sys.stderr)
 
 
 if __name__ == "__main__":

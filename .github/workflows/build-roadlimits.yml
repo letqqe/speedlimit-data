@@ -1,30 +1,78 @@
 name: build-roadlimits
 on:
   workflow_dispatch:
+    inputs:
+      offset:
+        description: "First region in the sorted list (0 for the first run)"
+        default: "0"
+        required: true
+      count:
+        description: "How many regions to build in this run (max 256)"
+        default: "256"
+        required: true
 permissions:
   contents: write
 jobs:
-  build:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install osmium
-        run: sudo apt-get update && sudo apt-get install -y osmium-tool
-      - name: Download region extract (Geofabrik)
-        run: curl -fL -o region.osm.pbf https://download.geofabrik.de/russia/central-fed-district-latest.osm.pbf
-      - name: Keep only roads with a maxspeed tag
-        run: |
-          osmium tags-filter region.osm.pbf w/highway maxspeed maxspeed:forward maxspeed:backward -o roads.osm.pbf --overwrite
-          osmium export roads.osm.pbf -f geojsonseq -o roads.geojsonseq --overwrite
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - id: plan
+        run: echo "matrix=$(python3 tools/list_regions.py --offset ${{ inputs.offset }} --count ${{ inputs.count }})" >> "$GITHUB_OUTPUT"
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install osmium
+        run: sudo apt-get update && sudo apt-get install -y osmium-tool
+      - name: Download extract
+        run: curl -fL -o region.osm.pbf "${{ matrix.url }}"
+      - name: Keep roads with a maxspeed tag
+        run: |
+          osmium tags-filter region.osm.pbf w/highway maxspeed maxspeed:forward maxspeed:backward -o roads.osm.pbf --overwrite
+          rm -f region.osm.pbf
+          osmium export roads.osm.pbf -f geojsonseq -o roads.geojsonseq --overwrite
+          rm -f roads.osm.pbf
       - name: Build SQLite
-        run: python3 tools/build_roadlimits.py roads.geojsonseq central-fed-district.sqlite --region central-fed-district
-      - name: Publish release
+        run: python3 tools/build_roadlimits.py roads.geojsonseq "${{ matrix.id }}.sqlite" --region "${{ matrix.id }}"
+      - name: Write manifest entry
+        run: python3 tools/make_entry.py "${{ matrix.id }}.sqlite" --url "https://github.com/${{ github.repository }}/releases/download/roadlimits-v1/${{ matrix.id }}.sqlite" --out "entry-${{ matrix.id }}.json"
+      - name: Check size (GitHub limit is 2 GB per file)
+        run: test "$(stat -c %s "${{ matrix.id }}.sqlite")" -lt 2000000000
+      - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release view roadlimits-v1 >/dev/null 2>&1 || gh release create roadlimits-v1 --title "Road limits v1" --notes "ODbL data © OpenStreetMap contributors. https://www.openstreetmap.org/copyright"
-          gh release upload roadlimits-v1 central-fed-district.sqlite --clobber
+          gh release upload roadlimits-v1 "${{ matrix.id }}.sqlite" "entry-${{ matrix.id }}.json" --clobber
+  manifest:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Collect entries and write manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p entries
+          gh release download roadlimits-v1 --pattern 'entry-*.json' --dir entries --clobber
+          python3 tools/write_manifest.py entries manifest.json
+          gh release upload roadlimits-v1 manifest.json --clobber
