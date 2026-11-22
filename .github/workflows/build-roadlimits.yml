@@ -49,22 +49,46 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y osmium-tool
       - name: Download extract
         run: curl -fL --retry 5 --retry-delay 10 --retry-all-errors -o /mnt/work/region.osm.pbf "${{ matrix.url }}"
+      - name: Plan the grid (cells of about 2 GB of input each)
+        run: |
+          SIZE=$(stat -c %s /mnt/work/region.osm.pbf)
+          # osmium prints the header bbox as (minlon,minlat,maxlon,maxlat); the builder wants south,west,north,east
+          BOX=$(osmium fileinfo -e /mnt/work/region.osm.pbf | grep -oE '\(-?[0-9.]+,-?[0-9.]+,-?[0-9.]+,-?[0-9.]+\)' | head -1 | tr -d '()')
+          BOUNDS=$(echo "$BOX" | awk -F, '{print $2","$1","$4","$3}')
+          N=$(( (SIZE + 2000000000 - 1) / 2000000000 ))
+          SIDE=1; while [ $((SIDE * SIDE)) -lt "$N" ]; do SIDE=$((SIDE + 1)); done
+          if [ "$N" -le 1 ]; then GRID=""; else GRID="$SIDE,$SIDE"; fi
+          echo "BOUNDS=$BOUNDS" >> "$GITHUB_ENV"
+          echo "GRID=$GRID" >> "$GITHUB_ENV"
+          echo "pbf $SIZE bytes, bounds $BOUNDS, grid '${GRID:-none}'"
       - name: Keep roads with a maxspeed tag, stream them into the builder
         run: |
           osmium tags-filter /mnt/work/region.osm.pbf w/highway maxspeed maxspeed:forward maxspeed:backward -o /mnt/work/roads.osm.pbf --overwrite
           rm -f /mnt/work/region.osm.pbf
-          osmium export /mnt/work/roads.osm.pbf -f geojsonseq -o - | python3 tools/build_roadlimits.py - "/mnt/work/${{ matrix.id }}.sqlite" --region "${{ matrix.id }}"
+          GRIDARGS=""; if [ -n "$GRID" ]; then GRIDARGS="--bounds $BOUNDS --grid $GRID"; fi
+          osmium export /mnt/work/roads.osm.pbf -f geojsonseq -o - | python3 tools/build_roadlimits.py - "/mnt/work/${{ matrix.id }}.sqlite" --region "${{ matrix.id }}" $GRIDARGS
           rm -f /mnt/work/roads.osm.pbf
-      - name: Write manifest entry
-        run: python3 tools/make_entry.py "/mnt/work/${{ matrix.id }}.sqlite" --url "https://github.com/${{ github.repository }}/releases/download/roadlimits-v1/${{ matrix.id }}.sqlite" --out "/mnt/work/entry-${{ matrix.id }}.json"
-      - name: Check size (GitHub limit is 2 GB per file)
-        run: test "$(stat -c %s "/mnt/work/${{ matrix.id }}.sqlite")" -lt 2000000000
+      - name: Check sizes (GitHub limit is 2 GB per file)
+        run: |
+          for f in /mnt/work/${{ matrix.id }}.sqlite /mnt/work/${{ matrix.id }}-r*c*.sqlite; do
+            [ -f "$f" ] || continue
+            ls -l "$f"
+            test "$(stat -c %s "$f")" -lt 2000000000 || { echo "$f is over 2 GB"; exit 1; }
+          done
+      - name: Write manifest entries
+        run: |
+          for f in /mnt/work/${{ matrix.id }}.sqlite /mnt/work/${{ matrix.id }}-r*c*.sqlite; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" .sqlite)
+            python3 tools/make_entry.py "$f" --url "https://github.com/${{ github.repository }}/releases/download/roadlimits-v1/$name.sqlite" --out "/mnt/work/entry-$name.json"
+          done
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          FILES=$(ls /mnt/work/${{ matrix.id }}.sqlite /mnt/work/${{ matrix.id }}-r*c*.sqlite /mnt/work/entry-${{ matrix.id }}*.json 2>/dev/null)
           for i in 1 2 3; do
-            gh release upload roadlimits-v1 "/mnt/work/${{ matrix.id }}.sqlite" "/mnt/work/entry-${{ matrix.id }}.json" --clobber && break
+            gh release upload roadlimits-v1 $FILES --clobber && break
             echo "upload attempt $i failed, retrying"; sleep 20
           done
   manifest:

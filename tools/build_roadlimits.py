@@ -94,51 +94,78 @@ def iter_segments(path):
             f.close()
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("geojsonseq")
-    ap.add_argument("out")
-    ap.add_argument("--region", required=True)
-    ap.add_argument("--source", default="OpenStreetMap contributors (ODbL)")
-    args = ap.parse_args()
+EDGE_DEG = 0.001  # ~100 m: roads this close to a cell edge also go into the neighbouring cell
 
-    tiles = defaultdict(bytearray)
-    count = 0
-    south = west = 90.0
-    north = east = -90.0
-    for kmh, a_lat, a_lng, b_lat, b_lng in iter_segments(args.geojsonseq):
-        rec = RECORD.pack(
-            kmh,
-            round(a_lat * 1e7), round(a_lng * 1e7),
-            round(b_lat * 1e7), round(b_lng * 1e7),
-        )
-        s, n = min(a_lat, b_lat), max(a_lat, b_lat)
-        w, e = min(a_lng, b_lng), max(a_lng, b_lng)
-        south, north = min(south, s), max(north, n)
-        west, east = min(west, w), max(east, e)
-        for key in tiles_for_bbox(s, w, n, e):
-            tiles[key] += rec
-        count += 1
 
-    out = sqlite3.connect(args.out)
+def write_db(path, region, tiles, count, bounds, source):
+    out = sqlite3.connect(path)
     out.execute("DROP TABLE IF EXISTS meta")
     out.execute("DROP TABLE IF EXISTS tiles")
     out.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
     out.execute("CREATE TABLE tiles (key INTEGER PRIMARY KEY, data BLOB)")
     out.executemany("INSERT INTO meta VALUES (?, ?)", [
         ("format_version", str(FORMAT_VERSION)),
-        ("region", args.region),
-        ("source", args.source),
+        ("region", region),
+        ("source", source),
         ("licence", "ODbL 1.0 (https://opendatacommons.org/licenses/odbl/1-0/)"),
         ("segments", str(count)),
-        ("bounds", f"{south},{west},{north},{east}"),
+        ("bounds", "%s,%s,%s,%s" % bounds),
     ])
     out.executemany("INSERT INTO tiles VALUES (?, ?)", [(k, bytes(v)) for k, v in tiles.items()])
     out.commit()
     out.execute("VACUUM")
     out.close()
-    print(f"{count} segments in {len(tiles)} tiles -> {args.out}", file=sys.stderr)
-    print(f"bounds south,west,north,east = {south},{west},{north},{east}", file=sys.stderr)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("geojsonseq", help="road GeoJSON sequence, or - for stdin")
+    ap.add_argument("out", help="output .sqlite path (for a grid, the cell suffix is added)")
+    ap.add_argument("--region", required=True)
+    ap.add_argument("--source", default="OpenStreetMap contributors (ODbL)")
+    ap.add_argument("--bounds", help="south,west,north,east of the whole region (needed for --grid)")
+    ap.add_argument("--grid", help="rows,cols: split the region into cells, one database each")
+    args = ap.parse_args()
+
+    if args.grid:
+        rows, cols = (int(x) for x in args.grid.split(","))
+        s0, w0, n0, e0 = (float(x) for x in args.bounds.split(","))
+        cells = []
+        for r in range(rows):
+            for c in range(cols):
+                cs = s0 + (n0 - s0) * r / rows
+                cn = s0 + (n0 - s0) * (r + 1) / rows
+                cw = w0 + (e0 - w0) * c / cols
+                ce = w0 + (e0 - w0) * (c + 1) / cols
+                cells.append((f"{args.region}-r{r}c{c}", (cs, cw, cn, ce)))
+    else:
+        cells = [(args.region, None)]
+
+    tiles = {cid: defaultdict(bytearray) for cid, _ in cells}
+    counts = {cid: 0 for cid, _ in cells}
+    seen_bounds = [90.0, 180.0, -90.0, -180.0]  # s, w, n, e of what was actually read
+    for kmh, a_lat, a_lng, b_lat, b_lng in iter_segments(args.geojsonseq):
+        rec = RECORD.pack(kmh, round(a_lat * 1e7), round(a_lng * 1e7), round(b_lat * 1e7), round(b_lng * 1e7))
+        s, n = min(a_lat, b_lat), max(a_lat, b_lat)
+        w, e = min(a_lng, b_lng), max(a_lng, b_lng)
+        seen_bounds = [min(seen_bounds[0], s), min(seen_bounds[1], w), max(seen_bounds[2], n), max(seen_bounds[3], e)]
+        for cid, box in cells:
+            if box is not None:
+                cs, cw, cn, ce = box
+                if n < cs - EDGE_DEG or s > cn + EDGE_DEG or e < cw - EDGE_DEG or w > ce + EDGE_DEG:
+                    continue
+            counts[cid] += 1
+            for key in tiles_for_bbox(s, w, n, e):
+                tiles[cid][key] += rec
+
+    written = []
+    for cid, box in cells:
+        path = args.out if not args.grid else args.out.replace(".sqlite", f"-{cid.split('-')[-1]}.sqlite")
+        bounds = box if box is not None else tuple(seen_bounds)
+        write_db(path, cid, tiles[cid], counts[cid], bounds, args.source)
+        written.append(path)
+        print(f"{cid}: {counts[cid]} segments in {len(tiles[cid])} tiles -> {path} bounds {bounds}", file=sys.stderr)
+    print("\n".join(written))
 
 
 if __name__ == "__main__":
