@@ -10,6 +10,7 @@ import argparse
 import json
 import re
 import sys
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -26,6 +27,19 @@ def size_of(url):
         return 0  # unknown size: keep it, the build step will report any real failure
 
 
+def fetch_index(attempts=6, wait=120):
+    """Geofabrik's index, retried so a short outage does not fail the whole plan."""
+    for i in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(INDEX, timeout=60) as r:
+                return json.load(r)["features"]
+        except OSError as e:
+            if i == attempts:
+                raise
+            print(f"index attempt {i} failed ({e}); retrying in {wait}s", file=sys.stderr)
+            time.sleep(wait)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--offset", type=int, default=0)
@@ -38,8 +52,7 @@ def main():
         with open(args.done, encoding="utf-8") as f:
             done_names = {line.strip() for line in f if line.strip()}
 
-    with urllib.request.urlopen(INDEX, timeout=60) as r:
-        feats = json.load(r)["features"]
+    feats = fetch_index()
     parents = {f["properties"].get("parent") for f in feats}
     leaves = []
     for f in feats:
