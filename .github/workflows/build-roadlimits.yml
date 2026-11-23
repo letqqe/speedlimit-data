@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       offset:
-        description: "First region in the sorted list (0 for the first run)"
+        description: "Skip this many unpublished regions (0 for the first run)"
         default: "0"
         required: true
       count:
@@ -30,20 +30,33 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Create release once (avoids a race between parallel jobs)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release view roadlimits-v1 >/dev/null 2>&1 || gh release create roadlimits-v1 --title "Road limits v1" --notes "ODbL data © OpenStreetMap contributors. https://www.openstreetmap.org/copyright"
       - id: plan
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OFFSET: ${{ inputs.offset || '0' }}
           COUNT: ${{ inputs.count || '256' }}
         run: |
-          # Keep the exit code: an empty matrix must fail here, not later in the build job.
-          gh release view roadlimits-v1 --json assets --jq '.assets[].name' > published.txt
-          MATRIX=$(python3 tools/list_regions.py --done published.txt --offset "${OFFSET:-0}" --count "${COUNT:-256}") || exit 1
-          [ -n "$MATRIX" ] || { echo "region list is empty"; exit 1; }
+          # Every road-limit release, and the names already published on them.
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | grep '^roadlimits-' > tags.txt || true
+          : > published.txt
+          while read -r tag; do
+            gh release view "$tag" --json assets --jq '.assets[].name' >> published.txt
+          done < tags.txt
+          # Build into the newest release that has room (GitHub allows 1000 assets per release).
+          TAG=""
+          while read -r tag; do
+            n=$(gh release view "$tag" --json assets --jq '.assets | length')
+            if [ "$n" -lt 900 ]; then TAG="$tag"; fi
+          done < tags.txt
+          if [ -z "$TAG" ]; then
+            LAST=$(sort -V tags.txt | tail -1 | sed 's/^roadlimits-v//')
+            TAG="roadlimits-v$(( ${LAST:-0} + 1 ))"
+            gh release create "$TAG" --title "Road limits $TAG" --notes "ODbL data © OpenStreetMap contributors. https://www.openstreetmap.org/copyright"
+          fi
+          echo "build release: $TAG"
+          # Keep the exit code: an empty matrix must not reach the build job silently.
+          MATRIX=$(python3 tools/list_regions.py --done published.txt --offset "$OFFSET" --count "$COUNT") || exit 1
+          MATRIX=$(echo "$MATRIX" | python3 -c "import json,sys; d=json.load(sys.stdin); [x.update(tag='$TAG') for x in d['include']]; print(json.dumps(d))")
           COUNT_OUT=$(echo "$MATRIX" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['include']))")
           echo "$COUNT_OUT regions in this run"
           echo "count=$COUNT_OUT" >> "$GITHUB_OUTPUT"
@@ -101,7 +114,7 @@ jobs:
           for f in /mnt/work/${{ matrix.id }}.sqlite /mnt/work/${{ matrix.id }}-r*c*.sqlite; do
             [ -f "$f" ] || continue
             name=$(basename "$f" .sqlite)
-            python3 tools/make_entry.py "$f" --url "https://github.com/${{ github.repository }}/releases/download/roadlimits-v1/$name.sqlite" --out "/mnt/work/entry-$name.json"
+            python3 tools/make_entry.py "$f" --url "https://github.com/${{ github.repository }}/releases/download/${{ matrix.tag }}/$name.sqlite" --out "/mnt/work/entry-$name.json"
           done
       - name: Publish
         env:
@@ -112,9 +125,9 @@ jobs:
                    /mnt/work/entry-${{ matrix.id }}.json /mnt/work/entry-${{ matrix.id }}-r*c*.json; do
             [ -f "$f" ] && FILES="$FILES $f"
           done
-          echo "uploading:$FILES"
+          echo "uploading to ${{ matrix.tag }}:$FILES"
           for i in 1 2 3; do
-            gh release upload roadlimits-v1 $FILES --clobber && break
+            gh release upload "${{ matrix.tag }}" $FILES --clobber && break
             echo "upload attempt $i failed, retrying"; sleep 20
           done
   manifest:
@@ -126,11 +139,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Collect entries and write manifest
+      - name: Collect entries from every road-limit release and write manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p entries
-          gh release download roadlimits-v1 --pattern 'entry-*.json' --dir entries --clobber
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | grep '^roadlimits-' | while read -r tag; do
+            gh release download "$tag" --pattern 'entry-*.json' --dir entries --clobber
+          done
           python3 tools/write_manifest.py entries manifest.json
           gh release upload roadlimits-v1 manifest.json --clobber
