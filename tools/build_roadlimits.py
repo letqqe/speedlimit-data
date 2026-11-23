@@ -121,6 +121,7 @@ def main():
     ap.add_argument("--source", default="OpenStreetMap contributors (ODbL)")
     ap.add_argument("--bounds", help="south,west,north,east of the whole region (needed for --grid)")
     ap.add_argument("--grid", help="rows,cols: split the region into cells, one database each")
+    ap.add_argument("--only", help="r,c: build just this grid cell (keeps memory to one cell)")
     args = ap.parse_args()
 
     if args.grid:
@@ -136,6 +137,12 @@ def main():
                 cells.append((f"{args.region}-r{r}c{c}", (cs, cw, cn, ce)))
     else:
         cells = [(args.region, None)]
+
+    if args.only:
+        r, c = (int(x) for x in args.only.split(","))
+        cells = [cell for cell in cells if cell[0] == f"{args.region}-r{r}c{c}"]
+        if not cells:
+            sys.exit(f"cell {args.only} is not in the grid {args.grid}")
 
     tiles = {cid: defaultdict(bytearray) for cid, _ in cells}
     counts = {cid: 0 for cid, _ in cells}
