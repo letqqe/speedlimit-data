@@ -8,6 +8,7 @@ Usage: list_regions.py --offset 0 --count 256
 """
 import argparse
 import json
+import re
 import sys
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +30,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--count", type=int, default=256)
+    ap.add_argument("--done", help="file with release asset names; regions already published are skipped")
     args = ap.parse_args()
+
+    done_names = set()
+    if args.done:
+        with open(args.done, encoding="utf-8") as f:
+            done_names = {line.strip() for line in f if line.strip()}
 
     with urllib.request.urlopen(INDEX, timeout=60) as r:
         feats = json.load(r)["features"]
@@ -52,8 +59,17 @@ def main():
         else:
             kept.append(leaf)
 
-    chunk = kept[args.offset:args.offset + args.count]
-    print(f"{len(kept)} buildable regions; this run: {len(chunk)}", file=sys.stderr)
+    def published(region_id):
+        # a region is done when its entry is on the release, unsplit or as grid cells
+        if f"entry-{region_id}.json" in done_names:
+            return True
+        pat = re.compile(rf"entry-{re.escape(region_id)}-r\d+c\d+\.json")
+        return any(pat.fullmatch(n) for n in done_names)
+
+    todo = [r for r in kept if not published(r["id"])]
+    print(f"{len(kept)} buildable, {len(kept) - len(todo)} already published, {len(todo)} to build", file=sys.stderr)
+    chunk = todo[args.offset:args.offset + args.count]
+    print(f"this run: {len(chunk)}", file=sys.stderr)
     print(json.dumps({"include": chunk}))
 
 
