@@ -39,7 +39,8 @@ def main():
         p = f["properties"]
         pbf = (p.get("urls") or {}).get("pbf")
         if pbf and p["id"] not in parents:
-            leaves.append({"id": p["id"], "url": pbf})
+            # IDs are used as file names and as app keys, so "us/alabama" becomes "us-alabama".
+            leaves.append({"id": p["id"].replace("/", "-"), "url": pbf})
     leaves.sort(key=lambda x: x["id"])
 
     with ThreadPoolExecutor(max_workers=16) as ex:
