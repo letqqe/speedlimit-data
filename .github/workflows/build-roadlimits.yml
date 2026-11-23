@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,10 +44,13 @@ jobs:
           gh release view roadlimits-v1 --json assets --jq '.assets[].name' > published.txt
           MATRIX=$(python3 tools/list_regions.py --done published.txt --offset "${OFFSET:-0}" --count "${COUNT:-256}") || exit 1
           [ -n "$MATRIX" ] || { echo "region list is empty"; exit 1; }
-          echo "$MATRIX" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['include']), 'regions in this run')"
+          COUNT_OUT=$(echo "$MATRIX" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['include']))")
+          echo "$COUNT_OUT regions in this run"
+          echo "count=$COUNT_OUT" >> "$GITHUB_OUTPUT"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
   build:
     needs: plan
+    if: needs.plan.outputs.count != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     strategy:
