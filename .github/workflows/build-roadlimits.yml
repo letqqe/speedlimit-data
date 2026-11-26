@@ -83,6 +83,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y osmium-tool
       - name: Download extract
         run: curl -fL --retry 10 --retry-delay 30 --retry-max-time 1200 --retry-all-errors -o /mnt/work/region.osm.pbf "${{ matrix.url }}"
+      - name: Check the download is a whole PBF file
+        run: |
+          test -s /mnt/work/region.osm.pbf
+          osmium fileinfo /mnt/work/region.osm.pbf > /dev/null || { echo "download is not a valid PBF"; exit 1; }
       - name: Plan the grid (cells of about 2 GB of input each)
         run: |
           SIZE=$(stat -c %s /mnt/work/region.osm.pbf)
@@ -95,12 +99,24 @@ jobs:
           echo "BOUNDS=$BOUNDS" >> "$GITHUB_ENV"
           echo "GRID=$GRID" >> "$GITHUB_ENV"
           echo "pbf $SIZE bytes, bounds $BOUNDS, grid '${GRID:-none}'"
-      - name: Keep roads with a maxspeed tag, stream them into the builder
+      - name: Keep roads with a maxspeed tag, then build
         run: |
           osmium tags-filter /mnt/work/region.osm.pbf w/highway maxspeed maxspeed:forward maxspeed:backward -o /mnt/work/roads.osm.pbf --overwrite
           rm -f /mnt/work/region.osm.pbf
-          GRIDARGS=""; if [ -n "$GRID" ]; then GRIDARGS="--bounds $BOUNDS --grid $GRID"; fi
-          osmium export /mnt/work/roads.osm.pbf -f geojsonseq -o - | python3 tools/build_roadlimits.py - "/mnt/work/${{ matrix.id }}.sqlite" --region "${{ matrix.id }}" $GRIDARGS
+          if [ -z "$GRID" ]; then
+            osmium export /mnt/work/roads.osm.pbf -f geojsonseq -o - | python3 tools/build_roadlimits.py - "/mnt/work/${{ matrix.id }}.sqlite" --region "${{ matrix.id }}"
+          else
+            # One cell at a time: the roads file stays on disk, so only one cell's tiles are in memory.
+            osmium export /mnt/work/roads.osm.pbf -f geojsonseq -o /mnt/work/roads.geojsonseq --overwrite
+            rm -f /mnt/work/roads.osm.pbf
+            IFS=, read ROWS COLS <<< "$GRID"
+            for r in $(seq 0 $((ROWS - 1))); do
+              for c in $(seq 0 $((COLS - 1))); do
+                python3 tools/build_roadlimits.py /mnt/work/roads.geojsonseq "/mnt/work/${{ matrix.id }}.sqlite" --region "${{ matrix.id }}" --bounds="$BOUNDS" --grid "$GRID" --only "$r,$c"
+              done
+            done
+            rm -f /mnt/work/roads.geojsonseq
+          fi
           rm -f /mnt/work/roads.osm.pbf
       - name: Check sizes (GitHub limit is 2 GB per file)
         run: |
