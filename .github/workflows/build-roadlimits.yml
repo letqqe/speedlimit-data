@@ -55,7 +55,12 @@ jobs:
           fi
           echo "build release: $TAG"
           # Keep the exit code: an empty matrix must not reach the build job silently.
-          MATRIX=$(python3 tools/list_regions.py --done published.txt --offset "$OFFSET" --count "$COUNT") || exit 1
+          MATRIX=""
+          for i in 1 2 3 4 5; do
+            MATRIX=$(python3 tools/list_regions.py --done published.txt --offset "$OFFSET" --count "$COUNT") && break
+            echo "region index attempt $i failed, retrying in 120s"; sleep 120
+          done
+          [ -n "$MATRIX" ] || { echo "region index unavailable after 5 attempts"; exit 1; }
           MATRIX=$(echo "$MATRIX" | python3 -c "import json,sys; d=json.load(sys.stdin); [x.update(tag='$TAG') for x in d['include']]; print(json.dumps(d))")
           COUNT_OUT=$(echo "$MATRIX" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['include']))")
           echo "$COUNT_OUT regions in this run"
